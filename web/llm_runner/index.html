@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LLM Runner — ONNX Runtime WebGPU</title>
+    <style>
+        :root {
+            --bg: #f6f7f9;
+            --card: #ffffff;
+            --text: #1b1f24;
+            --muted: #626c76;
+            --border: #e2e6ea;
+            --accent: #2f6feb;
+            --accent-hover: #245ad0;
+            --accent-contrast: #ffffff;
+            --output-bg: #fbfcfd;
+            --status-bg: #eef6f4;
+            --status-text: #0f6d5f;
+            --danger: #b4232a;
+            --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .1);
+            --radius: 12px;
+            --radius-sm: 8px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0f1216;
+                --card: #171b21;
+                --text: #e7eaee;
+                --muted: #9aa4af;
+                --border: #2a313a;
+                --accent: #4b83f0;
+                --accent-hover: #6295f5;
+                --output-bg: #12161b;
+                --status-bg: #10231f;
+                --status-text: #6ee7c9;
+                --danger: #ff8085;
+                --shadow: none;
+            }
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 32px 16px 64px;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrap { max-width: 860px; margin: 0 auto; }
+
+        header { margin-bottom: 24px; }
+
+        h1 {
+            font-size: 1.5rem;
+            margin: 0 0 4px;
+            letter-spacing: -.01em;
+        }
+
+        header p { margin: 0; color: var(--muted); font-size: .95rem; }
+
+        .webgpu-info {
+            margin-top: 14px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px 14px;
+            font-size: .82rem;
+            color: var(--muted);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 10px 12px;
+        }
+
+        .webgpu-info.unavailable { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+
+        .wg-badge {
+            font-weight: 700;
+            font-size: .68rem;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--accent) 16%, transparent);
+            color: var(--accent);
+        }
+
+        .wg-item b { color: var(--text); font-weight: 600; }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 20px;
+            margin-bottom: 18px;
+        }
+
+        .card h2 {
+            font-size: .8rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            color: var(--muted);
+            margin: 0 0 16px;
+            font-weight: 600;
+        }
+
+        label { display: block; font-size: .85rem; font-weight: 500; margin-bottom: 6px; }
+
+        .field { margin-bottom: 14px; }
+        .field:last-child { margin-bottom: 0; }
+
+        select,
+        input[type="text"],
+        input[type="number"],
+        textarea {
+            width: 100%;
+            padding: 10px 12px;
+            font: inherit;
+            color: var(--text);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            transition: border-color .15s, box-shadow .15s;
+        }
+
+        select:focus,
+        input:focus,
+        textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+        }
+
+        select:disabled,
+        input:disabled,
+        textarea:disabled { opacity: .55; cursor: not-allowed; }
+
+        textarea { min-height: 120px; resize: vertical; }
+
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+        .options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 18px;
+            margin-bottom: 16px;
+        }
+
+        .options label {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            margin: 0;
+            font-weight: 400;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .options input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
+        .params { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 16px; }
+        .params label { color: var(--muted); font-weight: 400; font-size: .8rem; }
+
+        button {
+            font: inherit;
+            font-weight: 600;
+            padding: 10px 18px;
+            border: 1px solid transparent;
+            border-radius: var(--radius-sm);
+            background: var(--accent);
+            color: var(--accent-contrast);
+            cursor: pointer;
+            transition: background .15s, opacity .15s;
+        }
+
+        button:hover:not(:disabled) { background: var(--accent-hover); }
+        button:disabled { opacity: .5; cursor: not-allowed; }
+
+        button.secondary {
+            background: transparent;
+            color: var(--accent);
+            border-color: var(--border);
+        }
+        button.secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+        #output {
+            background: var(--output-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 14px 16px;
+            min-height: 90px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        #output:empty::before { content: "The model's response will appear here."; color: var(--muted); }
+
+        #statusOutput {
+            margin-top: 12px;
+            background: var(--status-bg);
+            color: var(--status-text);
+            border-radius: var(--radius-sm);
+            padding: 10px 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: .82rem;
+            white-space: pre-wrap;
+        }
+
+        @media (max-width: 560px) {
+            .grid-2, .params { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="wrap">
+        <header>
+            <h1>LLM Runner</h1>
+            <p>Run large language models in your browser with ONNX Runtime Web + WebGPU.</p>
+            <div id="webgpuInfo" class="webgpu-info">Checking WebGPU…</div>
+        </header>
+
+        <section class="card">
+            <h2>Model</h2>
+            <div class="field">
+                <label for="modelSelect">Model</label>
+                <select id="modelSelect"></select>
+            </div>
+            <button id="loadModelButton">Load Model</button>
+        </section>
+
+        <section class="card">
+            <h2>Prompt</h2>
+            <div class="options">
+                <label><input type="checkbox" id="useChatTemplateCheckbox" checked> Use chat template</label>
+                <label><input type="checkbox" id="enableThinkingCheckbox"> Thinking</label>
+                <label><input type="checkbox" id="verboseCheckbox"> Verbose</label>
+            </div>
+
+            <div class="field">
+                <label for="promptInput">Your prompt</label>
+                <textarea id="promptInput">Imagine a future where artificial intelligence has significantly impacted global economics. Describe, in concise terms, two potential contrasting effects that widespread AI adoption could have on the international job market. Furthermore, considering the year is 2025, speculate on one immediate ethical concern that governments should prioritize regarding AI's integration into the workforce. Explain your reasoning.</textarea>
+            </div>
+
+            <div class="params">
+                <div>
+                    <label for="maxContextInput">Max Context (KV cache)</label>
+                    <input type="number" id="maxContextInput" value="4096" min="1"
+                        title="Static KV cache size = max total tokens (prompt + generated). Applied on model load.">
+                </div>
+                <div>
+                    <label for="prefillNInput">Prefill N (0 = no change)</label>
+                    <input type="number" id="prefillNInput" value="0" min="0">
+                </div>
+                <div>
+                    <label for="decodeNInput">Decode N (max new tokens)</label>
+                    <input type="number" id="decodeNInput" value="128" min="1">
+                </div>
+                <div>
+                    <label for="loopNInput">Loop</label>
+                    <input type="number" id="loopNInput" value="5" min="1">
+                </div>
+            </div>
+
+            <button id="generateResponseButton">Generate Response</button>
+        </section>
+
+        <section class="card">
+            <h2>Response</h2>
+            <div id="output"></div>
+            <div id="statusOutput">Press 'Load Model', then 'Generate Response'.</div>
+        </section>
+    </div>
+
+    <script>
+        // Build the import map, then load the app module, before any other module
+        // resolves. Local dev uses the installed node_modules; other hosts (e.g.
+        // GitHub Pages) use the jsDelivr CDN so no node_modules needs publishing.
+        // Keep these versions in sync with config.js and package.json.
+        (function () {
+            const host = location.hostname;
+            const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '';
+            const ORT = '1.27.0';
+            const TFJS = '4.2.0';
+            const imports = isLocal ? {
+                '@huggingface/transformers': '/web/node_modules/@huggingface/transformers/dist/transformers.web.js',
+                'onnxruntime-common': '/web/node_modules/onnxruntime-common/dist/esm/index.js',
+                'onnxruntime-web': '/web/node_modules/onnxruntime-web/dist/ort.webgpu.mjs',
+                // @huggingface/transformers imports the "onnxruntime-web/webgpu" subpath;
+                // import maps don't resolve subpaths, so map it explicitly to the same build.
+                'onnxruntime-web/webgpu': '/web/node_modules/onnxruntime-web/dist/ort.webgpu.mjs',
+            } : {
+                '@huggingface/transformers': `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TFJS}/dist/transformers.web.js`,
+                'onnxruntime-common': `https://cdn.jsdelivr.net/npm/onnxruntime-common@${ORT}/dist/esm/index.js`,
+                // Self-contained bundle: inlines the WASM glue + worker so nothing is
+                // dynamically imported cross-origin from the CDN (only the .wasm is fetched).
+                'onnxruntime-web': `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/ort.webgpu.bundle.min.mjs`,
+                'onnxruntime-web/webgpu': `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/ort.webgpu.bundle.min.mjs`,
+            };
+            const map = document.createElement('script');
+            map.type = 'importmap';
+            map.textContent = JSON.stringify({ imports });
+            document.head.appendChild(map);
+
+            const mod = document.createElement('script');
+            mod.type = 'module';
+            mod.src = 'script.js';
+            document.head.appendChild(mod);
+        })();
+    </script>
+</body>
+
+</html>

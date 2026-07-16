@@ -1,0 +1,35 @@
+{
+  "_comment": "Model manifest used when NOT running on localhost (e.g. GitHub Pages). Each entry streams from the Hugging Face Hub. The onnx file paths below use the conventional onnx-community layout (onnx/model_q4f16.onnx) and were NOT verified against the live repos — confirm the exact file names in each repo's 'Files' tab. External data files (.onnx_data) are auto-probed at load time.",
+  "models": [
+    {
+      "label": "Phi-4-mini-instruct (onnx-community)",
+      "hfId": "onnx-community/Phi-4-mini-instruct-ONNX",
+      "modelUrl": "https://huggingface.co/onnx-community/Phi-4-mini-instruct-ONNX/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Phi-4-mini-instruct (WebGPU)",
+      "hfId": "jianhui42/Phi-4-mini-instruct-ONNX-webgpu",
+      "modelUrl": "https://huggingface.co/jianhui42/Phi-4-mini-instruct-ONNX-webgpu/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Qwen3-4B (onnx-community)",
+      "hfId": "onnx-community/Qwen3-4B-ONNX",
+      "modelUrl": "https://huggingface.co/onnx-community/Qwen3-4B-ONNX/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Qwen3-4B (WebGPU)",
+      "hfId": "jianhui42/Qwen3-4B-ONNX-webgpu",
+      "modelUrl": "https://huggingface.co/jianhui42/Qwen3-4B-ONNX-webgpu/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Qwen3.5-4B-Text (WebGPU)",
+      "hfId": "jianhui42/Qwen3.5-4B-Text-ONNX-webgpu",
+      "modelUrl": "https://huggingface.co/jianhui42/Qwen3.5-4B-Text-ONNX-webgpu/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    }
+  ]
+}

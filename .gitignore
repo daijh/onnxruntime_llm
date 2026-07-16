@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Model files (large — download/place locally, not committed).
+# Keep the models/ folder itself (via its README) but ignore everything in it.
+models/*
+!models/README.md
+
+# Editor / OS
+.DS_Store
+.vscode/
+*.log
