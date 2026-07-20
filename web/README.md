@@ -8,15 +8,17 @@ No server-side inference — models run in your browser's GPU.
 
 | Project | Description |
 | --- | --- |
-| [`llm_runner/`](./llm_runner/) | General-purpose LLM chat interface for any merged-decoder ONNX model. Model capabilities are auto-detected from the ONNX session metadata, so no per-model configuration is required. |
+| [`llm_runner/`](./llm_runner/) | General-purpose LLM chat interface for any merged-decoder ONNX model. Hand-rolls the decode loop directly on ONNX Runtime Web; model capabilities are auto-detected from the ONNX session metadata, so no per-model configuration is required. |
+| [`transformers_runner/`](./transformers_runner/) | Browser LLM chat interface powered by [Transformers.js](https://github.com/huggingface/transformers.js) (`AutoModelForCausalLM.generate()`) on WebGPU. The full generation pipeline runs in the library, so no per-model configuration is required. |
 
 ## Layout
 
 ```
 web/
-  package.json     # deps + serve script (run npm here)
-  node_modules/    # installed deps (gitignored)
-  llm_runner/      # general-purpose LLM chat demo
+  package.json          # deps + serve script (run npm here)
+  node_modules/         # installed deps (gitignored)
+  llm_runner/           # LLM chat demo — hand-rolled ORT Web decode loop
+  transformers_runner/  # LLM chat demo — Transformers.js generate()
 ```
 
 The dev server runs from `web/` but serves the **repository root**, so both

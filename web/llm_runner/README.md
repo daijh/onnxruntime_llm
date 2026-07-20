@@ -9,7 +9,7 @@ General-purpose LLM chat interface using ONNX Runtime Web with WebGPU. Works wit
   - `position_ids` rank (2D standard or 3D MRoPE)
   - `use_cache_branch` for merged prefill/decode models
   - `num_logits_to_keep` for selective logit output
-- Static GPU-buffer KV cache pre-allocated to a configurable max context (default 4096)
+- Static GPU-buffer KV cache pre-allocated to a configurable max context (default 8192)
   - Single-buffer (in-place) by default; double-buffer auto-enabled for models that need it (e.g. Qwen3.5)
 - Auto-probes external data files (`.onnx.data` / `.onnx_data`)
 - Chat template support via `@huggingface/transformers` tokenizer

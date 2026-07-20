@@ -1,11 +1,12 @@
 /**
- * script.js — UI controller for LLM Runner ONNX Runtime WebGPU demo.
+ * script.js — UI controller for Transformers Runner (Transformers.js + WebGPU).
  *
  * Handles model loading, prompt construction, token generation,
- * and performance metric display.
+ * and performance metric display. Inference is delegated to the `LLM` class in
+ * llm.js, which wraps Transformers.js' AutoModelForCausalLM + generate().
  */
 
-import { AutoTokenizer, env } from '@huggingface/transformers';
+import { env, Tensor } from '@huggingface/transformers';
 import { LLM } from './llm.js';
 import { IS_LOCAL } from './config.js';
 
@@ -26,9 +27,6 @@ const generateResponseButton = document.getElementById('generateResponseButton')
 const outputDiv             = document.getElementById('output');
 const statusOutputDiv       = document.getElementById('statusOutput');
 const webgpuInfoDiv         = document.getElementById('webgpuInfo');
-// Profiling has no UI control; the element is absent, so this stays null unless
-// an #enableProfileCheckbox is re-added to index.html. Kept for future use.
-const enableProfileCheckbox = document.getElementById('enableProfileCheckbox');
 const useChatTemplateCheckbox = document.getElementById('useChatTemplateCheckbox');
 const enableThinkingCheckbox = document.getElementById('enableThinkingCheckbox');
 const verboseCheckbox       = document.getElementById('verboseCheckbox');
@@ -40,11 +38,10 @@ const maxContextInput       = document.getElementById('maxContextInput');
 // ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
-let tokenizer      = null;
-let llm            = null;
+let llm             = null;
 let webGpuAvailable = false;
 
-// Discovered models: option value -> { tokenizerId, configBaseUrl, onnxFileUrl, chatTemplateUrl, label }.
+// Discovered models: option value -> { modelId, dtype, chatTemplateUrl, label }.
 // Filled by detectModels() from either the manifest (remote) or a local /models/ scan.
 const modelEntries = new Map();
 
@@ -165,6 +162,19 @@ function parseDirLinks(doc, { dirs = true, files = true } = {}) {
     });
 }
 
+// Transformers.js dtype suffixes, checked longest-first so e.g. `q4f16` wins
+// over `q4`. Only the dtype token matters — Transformers.js selects the actual
+// ONNX file(s) itself, whether the export is a single `model_<dtype>.onnx` or a
+// split `decoder_model_merged_<dtype>.onnx` (+ `embed_tokens_<dtype>.onnx`).
+const KNOWN_DTYPES = ['q4f16', 'bnb4', 'q4', 'fp16', 'fp32', 'int8', 'uint8', 'q8', 'quantized'];
+
+/** Derive the Transformers.js `dtype` from an ONNX file name (`*_<dtype>.onnx`). */
+function dtypeFromOnnx(onnxPath) {
+    if (!onnxPath) return 'q4f16';
+    const base = (onnxPath.split('/').pop() || '').replace(/\.onnx$/i, '').toLowerCase();
+    return KNOWN_DTYPES.find(d => base.endsWith('_' + d)) || 'fp32';
+}
+
 /**
  * Populate the model dropdown. On localhost, scan the local /models/ directory
  * first and only fall back to the models.json manifest if it is empty. On any
@@ -211,15 +221,13 @@ function populateFromManifest(models) {
             const f = entry.onnxFiles[0];
             onnx = typeof f === 'string' ? f : f.file;
         }
-        const onnxUrl = !onnx ? ''
-            : /^https?:\/\//.test(onnx) ? onnx
-            : base + '/' + onnx.replace(/^\/+/, '');
         const label = entry.label || entry.hfId || entry.modelUrl || ('model ' + i);
+        // Transformers.js loads by repo id (tokenizer + config + weights); it
+        // selects the ONNX file from `dtype`, so we only need the id + dtype.
         addModelOption('m' + i, label, {
-            tokenizerId:     entry.hfId || base,
-            configBaseUrl:   base,
-            onnxFileUrl:     onnxUrl,
-            chatTemplateUrl: base + '/chat_template.jinja',
+            modelId:         entry.hfId || base,
+            dtype:           dtypeFromOnnx(onnx),
+            chatTemplateUrl: base ? base + '/chat_template.jinja' : '',
             label,
         });
     });
@@ -229,8 +237,8 @@ function populateFromManifest(models) {
 /**
  * Scan /models/ for local model folders and register each in the dropdown.
  * A "model folder" is any directory that directly contains a config.json, so
- * org-nested layouts (e.g. org/model/) are listed by their full path. The
- * decoder .onnx is auto-selected (preferring model_q4f16.onnx). Returns the count.
+ * org-nested layouts (e.g. org/model/) are listed by their full path. A sample
+ * .onnx is picked only to derive the dtype (preferring q4f16). Returns the count.
  */
 async function detectLocalModels() {
     env.allowRemoteModels = false;
@@ -253,9 +261,8 @@ async function detectLocalModels() {
         const onnx  = pickOnnx(root, onnxFiles);
         const label = root.replace(/^models\//, '');
         addModelOption('local' + i, label, {
-            tokenizerId:     abs,
-            configBaseUrl:   abs,
-            onnxFileUrl:     onnx ? '/' + onnx : '',
+            modelId:         abs,
+            dtype:           dtypeFromOnnx(onnx),
             chatTemplateUrl: abs + '/chat_template.jinja',
             label,
         });
@@ -265,11 +272,16 @@ async function detectLocalModels() {
     return modelRoots.length;
 }
 
-/** Choose the decoder .onnx under a model root, preferring model_q4f16.onnx. */
+/**
+ * Pick a sample .onnx under a model root, used only to derive the dtype
+ * (Transformers.js selects the real file set itself). Prefer a WebGPU-friendly
+ * q4f16 export — covers both `model_q4f16.onnx` and split
+ * `decoder_model_merged_q4f16.onnx` layouts.
+ */
 function pickOnnx(root, onnxFiles) {
     const candidates = onnxFiles.filter(f => f.startsWith(root + '/'));
     if (candidates.length === 0) return '';
-    return candidates.find(f => f.endsWith('model_q4f16.onnx')) || candidates[0];
+    return candidates.find(f => /q4f16\.onnx$/i.test(f)) || candidates[0];
 }
 
 /**
@@ -314,24 +326,6 @@ async function scanModelsTree(baseDir) {
 }
 
 // ---------------------------------------------------------------------------
-// Profiling
-// ---------------------------------------------------------------------------
-let profileData = '';
-function onProfilingData(data) { profileData += JSON.stringify(data) + '\n'; }
-
-function saveDataToFile(content, filename = 'profile-data.json') {
-    const blob = new Blob([content], { type: 'application/json' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-// ---------------------------------------------------------------------------
 // Model loading
 // ---------------------------------------------------------------------------
 
@@ -349,38 +343,28 @@ async function loadAndInitializeModel() {
     setButtonStates(true);
 
     try {
-        tokenizer = await AutoTokenizer.from_pretrained(sel.tokenizerId);
+        // Free the previously loaded model's GPU/WASM sessions before loading another.
+        if (llm) { try { await llm.dispose(); } catch (_) { /* ignore */ } llm = null; }
 
-        // If tokenizer has no chat_template, try loading chat_template.jinja from model dir
-        if (!tokenizer.chat_template) {
-            try {
-                const resp = await fetch(sel.chatTemplateUrl);
-                if (resp.ok) {
-                    tokenizer.chat_template = await resp.text();
-                    console.log('[loadModel] loaded chat_template.jinja');
-                }
-            } catch (_) { /* ignore */ }
-        }
-
-        const profiler = enableProfileCheckbox?.checked ?? false;
-        const verbose  = verboseCheckbox.checked;
-        const maxLen   = parseInt(maxContextInput?.value) || 8192;
+        const verbose = verboseCheckbox.checked;
         llm = new LLM();
-        await llm.load(sel.configBaseUrl, {
-            provider: "webgpu",
+        await llm.load(sel.modelId, {
+            device: "webgpu",
+            dtype: sel.dtype,
             verbose,
-            profiler,
-            maxLen,
-            onnxFile: sel.onnxFileUrl,
-            on_profiling_data: onProfilingData,
+            chatTemplateUrl: sel.chatTemplateUrl,
+            progress_callback: (p) => {
+                if (p.status === 'progress' && p.file) {
+                    updateOutputStatus(`Loading ${sel.label}… ${p.file} ${Math.round(p.progress || 0)}%`);
+                }
+            },
         });
 
-        updateOutputStatus(`Model loaded: ${sel.label}`);
+        updateOutputStatus(`Model loaded: ${sel.label} (dtype=${sel.dtype})`);
     } catch (error) {
         updateOutputStatus(`Error loading model: ${error.message}`);
         console.error("Error loading model:", error.stack || error);
         llm = null;
-        tokenizer = null;
     } finally {
         setButtonStates(false);
     }
@@ -390,72 +374,73 @@ async function loadAndInitializeModel() {
 // Inference
 // ---------------------------------------------------------------------------
 
-/** Decode token ids (from startIdx onward) back to text. */
-function tokenToText(tok, tokens, startIdx) {
-    const ids = tokens.slice(startIdx);
-    return ids.length < 1 ? "" : tok.decode(ids, { skip_special_tokens: true });
+/**
+ * Apply the "Prefill N" control to a tokenized inputs dict: pad (by repeating
+ * the prompt) or truncate the token ids to exactly `prefillN`, then rebuild the
+ * input_ids / attention_mask tensors. Returns the inputs unchanged when N <= 0.
+ */
+function applyPrefill(inputs, prefillN) {
+    if (!prefillN || prefillN <= 0) return inputs;
+
+    const ids = Array.from(inputs.input_ids.data, (v) => Number(v));
+    let finalIds = ids;
+    if (ids.length < prefillN) {
+        const pad = [];
+        while (pad.length < prefillN - ids.length) pad.push(...ids);
+        finalIds = [...pad.slice(0, prefillN - ids.length), ...ids];
+    } else if (ids.length > prefillN) {
+        finalIds = ids.slice(0, prefillN);
+    }
+
+    const data = BigInt64Array.from(finalIds, BigInt);
+    const dims = [1, finalIds.length];
+    return {
+        input_ids: new Tensor('int64', data, dims),
+        attention_mask: new Tensor('int64', new BigInt64Array(finalIds.length).fill(1n), dims),
+    };
 }
 
 async function generateResponse() {
     const userPrompt = promptInput.value.trim();
-    if (!userPrompt)          { updateOutputStatus("Please enter a prompt."); return; }
-    if (!llm || !tokenizer)   { updateOutputStatus("Model not loaded."); return; }
-    if (!webGpuAvailable)     { updateOutputStatus("WebGPU not available."); return; }
+    if (!userPrompt)      { updateOutputStatus("Please enter a prompt."); return; }
+    if (!llm)             { updateOutputStatus("Model not loaded."); return; }
+    if (!webGpuAvailable) { updateOutputStatus("WebGPU not available."); return; }
 
     updateOutputStatus("Generating response...");
     setButtonStates(true);
 
     try {
-        let prompt;
-        if (useChatTemplateCheckbox.checked) {
-            prompt = tokenizer.apply_chat_template(
-                [{ role: 'user', content: userPrompt }],
-                { add_generation_prompt: true, return_dict: false, tokenize: false,
-                  enable_thinking: enableThinkingCheckbox.checked });
-        } else {
-            prompt = userPrompt;
-        }
+        const baseInputs = llm.tokenize(userPrompt, {
+            useChatTemplate: useChatTemplateCheckbox.checked,
+            enableThinking: enableThinkingCheckbox.checked,
+        });
 
-        const { input_ids } = await tokenizer(prompt, { return_tensor: false, padding: true, truncation: true });
-
-        // Prefill padding / truncation
         const prefillN = parseInt(prefillNInput.value) || 0;
-        let finalInputIds = input_ids;
-        if (prefillN > 0) {
-            if (input_ids.length < prefillN) {
-                const pad = [];
-                while (pad.length < prefillN - input_ids.length) pad.push(...input_ids);
-                finalInputIds = [...pad.slice(0, prefillN - input_ids.length), ...input_ids];
-            } else if (input_ids.length > prefillN) {
-                finalInputIds = input_ids.slice(0, prefillN);
-            }
-        }
+        const inputs = applyPrefill(baseInputs, prefillN);
 
-        const decodeN = parseInt(decodeNInput.value) || 128;
-        const loopN = parseInt(loopNInput.value) || 1;
+        // Max Context caps total tokens (prompt + generated); Decode N caps new tokens.
+        const decodeN     = parseInt(decodeNInput.value) || 128;
+        const maxContext  = parseInt(maxContextInput.value) || 8192;
+        const promptLen   = Number(inputs.input_ids.dims.at(-1));
+        const maxNewTokens = Math.max(1, Math.min(decodeN, maxContext - promptLen));
+        const loopN       = parseInt(loopNInput.value) || 1;
 
         let allPerf = "";
         let generatedText = "";
         for (let run = 0; run < loopN; run++) {
-            llm.initializeFeed();
-
             generatedText = "";
-            const [outputTokens, _took, genTime, promptTime] = await llm.generate(finalInputIds,
-                (tokens) => {
-                    generatedText = tokenToText(tokenizer, tokens, finalInputIds.length);
-                    updateOutput(generatedText);
-                },
-                { max_tokens: decodeN });
+            const r = await llm.generate(inputs,
+                (text) => { generatedText = text; updateOutput(text); },
+                { max_tokens: maxNewTokens });
 
-            const promptTokens = finalInputIds.length;
-            const decodeTokens = Math.max(outputTokens.length - promptTokens - 1, 0);
+            generatedText = r.text;
             let perf = `=== Run ${run + 1}/${loopN} ===\n`;
-            perf += `  Prefill tokens: ${promptTokens}\n`;
-            perf += `  Decode tokens:  ${decodeTokens}\n`;
-            perf += `  TTFT:           ${(promptTime * 1000).toFixed(1)} ms\n`;
-            if (promptTime > 0) perf += `  Prefill speed:  ${(promptTokens / promptTime).toFixed(1)} tokens/s\n`;
-            if (genTime > 0)    perf += `  Decode speed:   ${(decodeTokens / genTime).toFixed(1)} tokens/s\n`;
-            perf += `  Total time:     ${((promptTime + genTime) * 1000).toFixed(1)} ms\n`;
+            perf += `  Prefill tokens: ${r.promptTokens}\n`;
+            perf += `  Decode tokens:  ${r.decodeTokens}\n`;
+            perf += `  TTFT:           ${(r.ttft * 1000).toFixed(1)} ms\n`;
+            if (r.ttft > 0)      perf += `  Prefill speed:  ${(r.promptTokens / r.ttft).toFixed(1)} tokens/s\n`;
+            if (r.genTime > 0)   perf += `  Decode speed:   ${(r.decodeTokens / r.genTime).toFixed(1)} tokens/s\n`;
+            perf += `  Total time:     ${(r.totalTime * 1000).toFixed(1)} ms\n`;
 
             console.log(perf);
             allPerf += perf;
@@ -463,8 +448,6 @@ async function generateResponse() {
         }
 
         updateOutput(generatedText);
-
-        if (enableProfileCheckbox?.checked) saveDataToFile(profileData, 'ort-web-profile.log');
     } catch (error) {
         updateOutput(`Error: ${error.message}`);
         console.error("Generation error:", error.stack || error);

@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ONNX Runtime LLM</title>
+    <title>ONNX Runtime LLM — Web Demos</title>
     <style>
         body {
             font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -37,19 +37,19 @@
 </head>
 
 <body>
-    <h1>ONNX Runtime LLM</h1>
-    <p class="sub">Browser-based LLM demos on ONNX Runtime Web + WebGPU — models run
-        entirely on-device in your GPU, with no server-side inference.</p>
+    <h1>Web Demos</h1>
+    <p class="sub">Browser-based LLM demos running entirely on-device with WebGPU —
+        no server-side inference.</p>
 
     <div class="card">
-        <a href="./web/llm_runner/">LLM Runner &rarr;</a>
+        <a href="./llm_runner/">LLM Runner &rarr;</a>
         <div>General-purpose LLM chat interface for any merged-decoder ONNX model.
             Hand-rolls the decode loop directly on ONNX Runtime Web; capabilities
             are auto-detected from the ONNX session metadata.</div>
     </div>
 
     <div class="card">
-        <a href="./web/transformers_runner/">Transformers Runner &rarr;</a>
+        <a href="./transformers_runner/">Transformers Runner &rarr;</a>
         <div>Browser LLM chat interface powered by
             <a href="https://github.com/huggingface/transformers.js">Transformers.js</a>
             (<code>AutoModelForCausalLM.generate()</code>) on WebGPU — the full

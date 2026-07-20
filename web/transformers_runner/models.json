@@ -1,0 +1,41 @@
+{
+  "_comment": "Model manifest used when NOT running on localhost (e.g. GitHub Pages). Each entry streams from the Hugging Face Hub. Transformers.js loads by repo id (hfId); the onnxFile is used ONLY to derive the dtype from its filename suffix (e.g. model_q4f16.onnx or decoder_model_merged_q4f16.onnx -> q4f16). Transformers.js then selects the actual ONNX file set itself, including split embed_tokens/decoder exports and .onnx_data external data. Models must be a Transformers.js-supported causal-LM architecture; vision-language repos load their text decoder only.",
+  "models": [
+    {
+      "label": "Phi-4-mini-instruct (onnx-community)",
+      "hfId": "onnx-community/Phi-4-mini-instruct-ONNX",
+      "modelUrl": "https://huggingface.co/onnx-community/Phi-4-mini-instruct-ONNX/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Phi-4-mini-instruct (WebGPU)",
+      "hfId": "jianhui42/Phi-4-mini-instruct-ONNX-webgpu",
+      "modelUrl": "https://huggingface.co/jianhui42/Phi-4-mini-instruct-ONNX-webgpu/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Qwen3-4B (onnx-community)",
+      "hfId": "onnx-community/Qwen3-4B-ONNX",
+      "modelUrl": "https://huggingface.co/onnx-community/Qwen3-4B-ONNX/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Qwen3-4B (WebGPU)",
+      "hfId": "jianhui42/Qwen3-4B-ONNX-webgpu",
+      "modelUrl": "https://huggingface.co/jianhui42/Qwen3-4B-ONNX-webgpu/resolve/main",
+      "onnxFile": "onnx/model_q4f16.onnx"
+    },
+    {
+      "label": "Qwen3.5-4B (onnx-community OPT)",
+      "hfId": "onnx-community/Qwen3.5-4B-ONNX-OPT",
+      "modelUrl": "https://huggingface.co/onnx-community/Qwen3.5-4B-ONNX-OPT/resolve/main",
+      "onnxFile": "onnx/decoder_model_merged_q4f16.onnx"
+    },
+    {
+      "label": "Qwen3.5-4B (WebGPU)",
+      "hfId": "jianhui42/Qwen3.5-4B-ONNX-webgpu",
+      "modelUrl": "https://huggingface.co/jianhui42/Qwen3.5-4B-ONNX-webgpu/resolve/main",
+      "onnxFile": "onnx/decoder_model_merged_q4f16.onnx"
+    }
+  ]
+}

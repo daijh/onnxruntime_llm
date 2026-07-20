@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>LLM Runner — ONNX Runtime WebGPU</title>
+    <title>Transformers Runner — Transformers.js + WebGPU</title>
     <style>
         :root {
             --bg: #f6f7f9;
@@ -223,8 +223,8 @@
 <body>
     <div class="wrap">
         <header>
-            <h1>LLM Runner</h1>
-            <p>Run large language models in your browser with ONNX Runtime Web + WebGPU.</p>
+            <h1>Transformers Runner</h1>
+            <p>Run large language models in your browser with Transformers.js + WebGPU.</p>
             <div id="webgpuInfo" class="webgpu-info">Checking WebGPU…</div>
         </header>
 
@@ -254,7 +254,7 @@
                 <div>
                     <label for="maxContextInput">Max Context (KV cache)</label>
                     <input type="number" id="maxContextInput" value="8192" min="1"
-                        title="Static KV cache size = max total tokens (prompt + generated). Applied on model load.">
+                        title="Max total tokens (prompt + generated). Transformers.js grows the KV cache dynamically; this caps generation length.">
                 </div>
                 <div>
                     <label for="prefillNInput">Prefill N (0 = no change)</label>

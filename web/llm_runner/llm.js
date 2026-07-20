@@ -7,7 +7,7 @@
  * configuration is required.
  *
  * KV cache:
- *   - Static: pre-allocated once to `maxLen` (default 4096) as GPU buffers, so
+ *   - Static: pre-allocated once to `maxLen` (default 8192) as GPU buffers, so
  *     there is no per-step reallocation and the cache stays on-device.
  *   - Single-buffer (default): the same buffer is bound as both past input and
  *     present output (in-place), using half the memory.
@@ -29,7 +29,7 @@ ort.env.wasm.numThreads = 1;
 // length so no per-step reallocation happens during decode. It is the hard cap
 // on total context (prompt + generated); generation stops at maxLen. Overridable
 // per-load via options.maxLen.
-const MAX_LEN = 4096;
+const MAX_LEN = 8192;
 
 function log(i) { console.log(i); }
 
