@@ -191,6 +191,24 @@
         }
         button.secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
+        .load-status {
+            margin-top: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: .82rem;
+            color: var(--muted);
+        }
+        .load-status[hidden] { display: none; }
+        .load-status .load-status-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        .load-progress {
+            flex: 1 1 auto;
+            height: 8px;
+            accent-color: var(--accent);
+        }
+        .load-progress[hidden] { display: none; }
+
         #output {
             background: var(--output-bg);
             border: 1px solid var(--border);
@@ -235,6 +253,10 @@
                 <select id="modelSelect"></select>
             </div>
             <button id="loadModelButton">Load Model</button>
+            <div id="loadStatus" class="load-status" hidden>
+                <progress id="loadProgress" class="load-progress" max="100"></progress>
+                <span id="loadStatusText" class="load-status-text"></span>
+            </div>
         </section>
 
         <section class="card">

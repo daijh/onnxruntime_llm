@@ -37,7 +37,7 @@ function log(i) { console.log(i); }
 // Fetch with Browser Cache API
 // ---------------------------------------------------------------------------
 
-export async function fetchAndCache(url) {
+export async function fetchAndCache(url, onProgress) {
     const cache = await caches.open("onnx");
     const cachedResponse = await cache.match(url).catch(() => undefined);
     if (cachedResponse) {
@@ -76,16 +76,42 @@ export async function fetchAndCache(url) {
     }
 
     let buffer;
-    try {
-        buffer = await response.arrayBuffer();
-    } catch (err) {
-        // Body read failed. RangeError = over the max ArrayBuffer size (when the
-        // server didn't send Content-Length); otherwise usually out of memory.
-        const hint = err.name === 'RangeError'
-            ? "exceeds the browser's ~2 GB max ArrayBuffer size"
-            : 'likely out of memory';
-        console.error(`[fetchAndCache] failed reading body of ${url} (${mb} MB): ${err.name}: ${err.message}`);
-        throw new Error(`Failed reading ${url} (${mb} MB) — ${hint}`);
+    if (onProgress && bytes > 0 && response.body?.getReader) {
+        // Stream the body so download progress can be reported. A single buffer
+        // pre-allocated to Content-Length keeps peak memory identical to
+        // response.arrayBuffer() (no chunk-list doubling).
+        try {
+            const reader = response.body.getReader();
+            const out = new Uint8Array(bytes);
+            let loaded = 0;
+            onProgress({ file: url, loaded: 0, total: bytes, progress: 0 });
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                out.set(value, loaded);   // throws RangeError if the server overshoots Content-Length
+                loaded += value.byteLength;
+                onProgress({ file: url, loaded, total: bytes, progress: (loaded / bytes) * 100 });
+            }
+            buffer = out.buffer;
+        } catch (err) {
+            const hint = err.name === 'RangeError'
+                ? "exceeds the browser's ~2 GB max ArrayBuffer size, or the server's Content-Length was wrong"
+                : 'likely out of memory';
+            console.error(`[fetchAndCache] failed streaming ${url} (${mb} MB): ${err.name}: ${err.message}`);
+            throw new Error(`Failed reading ${url} (${mb} MB) — ${hint}`);
+        }
+    } else {
+        try {
+            buffer = await response.arrayBuffer();
+        } catch (err) {
+            // Body read failed. RangeError = over the max ArrayBuffer size (when the
+            // server didn't send Content-Length); otherwise usually out of memory.
+            const hint = err.name === 'RangeError'
+                ? "exceeds the browser's ~2 GB max ArrayBuffer size"
+                : 'likely out of memory';
+            console.error(`[fetchAndCache] failed reading body of ${url} (${mb} MB): ${err.name}: ${err.message}`);
+            throw new Error(`Failed reading ${url} (${mb} MB) — ${hint}`);
+        }
     }
 
     try {
@@ -220,6 +246,13 @@ export class LLM {
         this.on_profiling_data = options.on_profiling_data;
         this.maxLen = options.maxLen || MAX_LEN;
 
+        // Per-file download progress (large weight files only). Reports the
+        // basename so the UI can show "model.onnx_data — 42%".
+        const onProg = options.progress_callback
+            ? (p) => options.progress_callback({
+                file: p.file.split('/').pop(), loaded: p.loaded, total: p.total, progress: p.progress })
+            : undefined;
+
         log(`loading... ${model}, ${provider}`);
         // Load model config
         const configBytes = await fetchAndCache(model + "/config.json");
@@ -255,7 +288,7 @@ export class LLM {
         const model_file_path = onnxPath.substring(0, lastSlash + 1);
         const model_file = onnxPath.substring(lastSlash + 1);
 
-        const model_bytes = await fetchAndCache(model_file_path + model_file);
+        const model_bytes = await fetchAndCache(model_file_path + model_file, onProg);
         let modelSize = model_bytes.byteLength;
 
         // External data naming: transformers.js / optimum use "<model>.onnx_data";
@@ -277,7 +310,7 @@ export class LLM {
         if (actual_external_data_suffix) {
             const externalDataEntries = [];
             // Load the first external data file
-            const firstData = await fetchAndCache(model_file_path + actual_external_data_suffix);
+            const firstData = await fetchAndCache(model_file_path + actual_external_data_suffix, onProg);
             modelSize += firstData.byteLength;
             externalDataEntries.push({ data: firstData, path: actual_external_data_suffix });
             // Probe for split external data files: _data_1, _data_2, ...
@@ -286,7 +319,7 @@ export class LLM {
                 try {
                     const resp = await fetch(model_file_path + splitName, { method: 'HEAD' });
                     if (!resp.ok) break;
-                    const splitData = await fetchAndCache(model_file_path + splitName);
+                    const splitData = await fetchAndCache(model_file_path + splitName, onProg);
                     modelSize += splitData.byteLength;
                     externalDataEntries.push({ data: splitData, path: splitName });
                 } catch (_) { break; }

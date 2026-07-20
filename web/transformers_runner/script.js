@@ -8,7 +8,13 @@
 
 import { env, Tensor } from '@huggingface/transformers';
 import { LLM } from './llm.js';
-import { IS_LOCAL } from './config.js';
+import { IS_LOCAL, ORT_VERSION } from './config.js';
+
+// Log the loaded dependency versions for diagnostics. The onnxruntime-web
+// version is read from the actually-loaded module (resolved by index.html's
+// import map, NOT bundled by Transformers.js), falling back to the config pin.
+const _ortVersions = env.backends?.onnx?.versions;
+console.log(`Transformers.js v${env.version} · onnxruntime-web v${_ortVersions?.web || _ortVersions?.common || ORT_VERSION}`);
 
 // Model source, chosen at runtime by detectModels():
 //   - On localhost, scan the local /models/ directory first, and fall back to the
@@ -34,6 +40,9 @@ const prefillNInput         = document.getElementById('prefillNInput');
 const decodeNInput          = document.getElementById('decodeNInput');
 const loopNInput            = document.getElementById('loopNInput');
 const maxContextInput       = document.getElementById('maxContextInput');
+const loadStatus            = document.getElementById('loadStatus');
+const loadProgress          = document.getElementById('loadProgress');
+const loadStatusText        = document.getElementById('loadStatusText');
 
 // ---------------------------------------------------------------------------
 // Global state
@@ -54,6 +63,24 @@ function updateOutput(message) {
     window.scrollTo(scrollX, scrollY);
 }
 function updateOutputStatus(message) { statusOutputDiv.textContent = message; }
+
+/** Show the loading progress bar under the Load button. pct null = indeterminate. */
+function setLoadProgress(text, pct) {
+    if (!loadStatus) return;
+    loadStatus.hidden = false;
+    loadProgress.hidden = false;
+    if (pct == null || Number.isNaN(pct)) loadProgress.removeAttribute('value');
+    else loadProgress.value = Math.max(0, Math.min(100, pct));
+    loadStatusText.textContent = text || '';
+}
+
+/** Finish loading: hide the bar, optionally leaving a final status line. */
+function endLoadProgress(text) {
+    if (!loadStatus) return;
+    loadProgress.hidden = true;
+    if (text) { loadStatus.hidden = false; loadStatusText.textContent = text; }
+    else loadStatus.hidden = true;
+}
 
 function setButtonStates(isLoading) {
     loadModelButton.disabled = isLoading || !webGpuAvailable;
@@ -339,7 +366,7 @@ async function loadAndInitializeModel() {
     const sel = resolveSelection();
     if (!sel)             { updateOutputStatus("Please select a model."); return; }
 
-    updateOutputStatus("Loading model... " + sel.label);
+    setLoadProgress('Loading ' + sel.label + '…', null);
     setButtonStates(true);
 
     try {
@@ -355,14 +382,16 @@ async function loadAndInitializeModel() {
             chatTemplateUrl: sel.chatTemplateUrl,
             progress_callback: (p) => {
                 if (p.status === 'progress' && p.file) {
-                    updateOutputStatus(`Loading ${sel.label}… ${p.file} ${Math.round(p.progress || 0)}%`);
+                    setLoadProgress(`${p.file} — ${Math.round(p.progress || 0)}%`, p.progress || 0);
+                } else if ((p.status === 'initiate' || p.status === 'download') && p.file) {
+                    setLoadProgress(`Fetching ${p.file}…`, null);
                 }
             },
         });
 
-        updateOutputStatus(`Model loaded: ${sel.label} (dtype=${sel.dtype})`);
+        endLoadProgress(`Model loaded: ${sel.label} (dtype=${sel.dtype})`);
     } catch (error) {
-        updateOutputStatus(`Error loading model: ${error.message}`);
+        endLoadProgress(`Error: ${error.message}`);
         console.error("Error loading model:", error.stack || error);
         llm = null;
     } finally {
