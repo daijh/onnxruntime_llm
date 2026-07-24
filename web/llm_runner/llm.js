@@ -1,10 +1,9 @@
 /**
  * llm.js — Generic single-session LLM inference using ONNX Runtime WebGPU.
  *
- * Works with any merged-decoder ONNX model. Capabilities (position-id rank,
- * use_cache_branch, num_logits_to_keep, and KV cache shapes/dtypes) are
- * auto-detected from the ONNX session metadata at load time, so no per-model
- * configuration is required.
+ * Works with any merged-decoder ONNX model. Capabilities (position-id rank and
+ * KV cache shapes/dtypes) are auto-detected from the ONNX session metadata at
+ * load time, so no per-model configuration is required.
  *
  * KV cache:
  *   - Static: pre-allocated once to `maxLen` (default 8192) as GPU buffers, so
@@ -139,6 +138,23 @@ function argmax(t) {
     return maxidx;
 }
 
+// Search a byte array for an ASCII substring. Used to detect whether an ONNX
+// graph references an external-data file (its filename is embedded as a
+// "location" string) without issuing network probes that 404 in the console.
+function bytesIncludesAscii(bytes, str) {
+    const needle = new TextEncoder().encode(str);
+    const n = needle.length;
+    if (n === 0 || bytes.length < n) return false;
+    const first = needle[0];
+    for (let i = 0, max = bytes.length - n; i <= max; i++) {
+        if (bytes[i] !== first) continue;
+        let j = 1;
+        while (j < n && bytes[i + j] === needle[j]) j++;
+        if (j === n) return true;
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Static GPU-buffer KV cache helpers
 // ---------------------------------------------------------------------------
@@ -213,7 +229,6 @@ export class LLM {
     // Session metadata
     decoderOutNames = [];
     kvIndices       = [];   // [[outputIdx, pastInputName], ...]
-    hasCacheBranch  = false;
 
     // Static GPU-buffer KV cache
     doubleBuffer   = false;     // distinct read/write buffers (needed by e.g. Qwen3.5)
@@ -235,13 +250,9 @@ export class LLM {
     on_profiling_data = null;
 
     // Auto-detected from model
-    need_position_ids       = false;
-    need_num_logits_to_keep = false;
-    numLogitsToKeepDims     = [1]; // resolved from metadata during load()
     positionIdRank          = 2;     // 2 = [1,N], 3 = [3,1,N] MRoPE
 
     async load(model, options) {
-        const provider = options.provider || "webgpu";
         this.profiler = options.profiler;
         this.on_profiling_data = options.on_profiling_data;
         this.maxLen = options.maxLen || MAX_LEN;
@@ -253,7 +264,7 @@ export class LLM {
                 file: p.file.split('/').pop(), loaded: p.loaded, total: p.total, progress: p.progress })
             : undefined;
 
-        log(`loading... ${model}, ${provider}`);
+        log(`loading... ${model}, webgpu`);
         // Load model config
         const configBytes = await fetchAndCache(model + "/config.json");
         const modelConfig = JSON.parse(new TextDecoder().decode(configBytes));
@@ -267,14 +278,12 @@ export class LLM {
 
         // Keep KV cache on GPU for fast decode
         const preferred = {};
-        if (provider === "webgpu") {
-            for (let i = 0; i < numLayers; ++i) {
-                preferred[`present.${i}.key`] = 'gpu-buffer';
-                preferred[`present.${i}.value`] = 'gpu-buffer';
-            }
+        for (let i = 0; i < numLayers; ++i) {
+            preferred[`present.${i}.key`] = 'gpu-buffer';
+            preferred[`present.${i}.value`] = 'gpu-buffer';
         }
         const opt = {
-            executionProviders: [provider],
+            executionProviders: ["webgpu"],
             preferredOutputLocation: preferred,
             freeDimensionOverrides: { batch_size: 1 },
         };
@@ -291,20 +300,21 @@ export class LLM {
         const model_bytes = await fetchAndCache(model_file_path + model_file, onProg);
         let modelSize = model_bytes.byteLength;
 
-        // External data naming: transformers.js / optimum use "<model>.onnx_data";
-        // ONNX Runtime GenAI uses "<model>.onnx.data". Probe the common one first so
-        // typical models never request (and 404) the other. A miss here is expected
-        // and not logged; split files (_data_1, _data_2, ...) are handled below.
+        // External data: an ONNX graph that keeps weights in a separate file
+        // embeds that file's name (as a "location" string) inside the .onnx. Scan
+        // the already-downloaded graph for the expected name instead of issuing
+        // HEAD probes — probes 404 (and clutter the console) for self-contained
+        // models whose weights are embedded in the .onnx.
+        //   transformers.js / optimum: "<model>.onnx_data"
+        //   ONNX Runtime GenAI:        "<model>.onnx.data"
         const external_data_candidates = [
             model_file + '_data',
             model_file + '.data',
         ];
+        const modelU8 = new Uint8Array(model_bytes);
         let actual_external_data_suffix = null;
         for (const candidate of external_data_candidates) {
-            try {
-                const resp = await fetch(model_file_path + candidate, { method: 'HEAD' });
-                if (resp.ok) { actual_external_data_suffix = candidate; break; }
-            } catch (_) { /* probe miss — try the next naming convention */ }
+            if (bytesIncludesAscii(modelU8, candidate)) { actual_external_data_suffix = candidate; break; }
         }
 
         if (actual_external_data_suffix) {
@@ -313,16 +323,14 @@ export class LLM {
             const firstData = await fetchAndCache(model_file_path + actual_external_data_suffix, onProg);
             modelSize += firstData.byteLength;
             externalDataEntries.push({ data: firstData, path: actual_external_data_suffix });
-            // Probe for split external data files: _data_1, _data_2, ...
+            // Split external data files (_data_1, _data_2, ...) are each referenced
+            // by name inside the graph, so scan for them too rather than probing.
             for (let i = 1; ; i++) {
                 const splitName = actual_external_data_suffix + '_' + i;
-                try {
-                    const resp = await fetch(model_file_path + splitName, { method: 'HEAD' });
-                    if (!resp.ok) break;
-                    const splitData = await fetchAndCache(model_file_path + splitName, onProg);
-                    modelSize += splitData.byteLength;
-                    externalDataEntries.push({ data: splitData, path: splitName });
-                } catch (_) { break; }
+                if (!bytesIncludesAscii(modelU8, splitName)) break;
+                const splitData = await fetchAndCache(model_file_path + splitName, onProg);
+                modelSize += splitData.byteLength;
+                externalDataEntries.push({ data: splitData, path: splitName });
             }
             log(`  external data: ${externalDataEntries.length} file(s)`);
             opt.externalData = externalDataEntries;
@@ -343,9 +351,6 @@ export class LLM {
         // Detect model capabilities from session metadata
         // ---------------------------------------------------------------
         const inputNameSet = new Set(this.decoderSession.inputNames);
-        this.need_position_ids = inputNameSet.has("position_ids");
-        this.need_num_logits_to_keep = inputNameSet.has("num_logits_to_keep");
-        this.hasCacheBranch = inputNameSet.has("use_cache_branch");
 
         // Build input metadata map (local, used for one-time config below)
         const inputMetaMap = {};
@@ -356,12 +361,6 @@ export class LLM {
         // Detect position_ids rank from metadata (e.g. [3, 1, N] for 3D MRoPE)
         if (inputMetaMap["position_ids"]) {
             this.positionIdRank = inputMetaMap["position_ids"].shape.length;
-        }
-
-        // Resolve num_logits_to_keep dims (scalar [] vs 1D [1])
-        if (this.need_num_logits_to_keep && inputMetaMap["num_logits_to_keep"]) {
-            const meta = inputMetaMap["num_logits_to_keep"];
-            this.numLogitsToKeepDims = meta.shape.length === 0 ? [] : [1];
         }
 
         // Log input/output counts for diagnostics
@@ -485,12 +484,7 @@ export class LLM {
         feed['input_ids'] = inputIdsTensor;
         feed['attention_mask'] = new ort.Tensor('int64',
             BigInt64Array.from({ length: seqLen }, () => 1n), [1, seqLen]);
-        if (this.need_position_ids) {
-            feed['position_ids'] = this._makePositionIds(0, seqLen);
-        }
-        if (this.need_num_logits_to_keep) {
-            feed['num_logits_to_keep'] = new ort.Tensor('int64', BigInt64Array.from([1n]), this.numLogitsToKeepDims);
-        }
+        feed['position_ids'] = this._makePositionIds(0, seqLen);
 
         if (this.profiler) this.decoderSession.startProfiling();
 
@@ -498,7 +492,6 @@ export class LLM {
         let lastToken      = -1n;
         let curLen          = seqLen;   // tracks total sequence length (prefill + decoded)
         let firstTokenTime  = 0;
-        const startTime     = performance.now();
         let tokenCount      = 0;
 
         // Pre-allocate buffers to avoid per-step allocation
@@ -507,9 +500,10 @@ export class LLM {
         const decodeIdBuf      = new BigInt64Array(1);
         const posIdBuf         = new BigInt64Array(3);
 
-        // Pre-create reusable tensors for use_cache_branch
-        const cacheBranchFalse = this.hasCacheBranch ? new ort.Tensor('bool', [false], [1]) : null;
-        const cacheBranchTrue  = this.hasCacheBranch ? new ort.Tensor('bool', [true], [1]) : null;
+        // Reused across decode steps: input_ids is always [1, 1] backed by
+        // decodeIdBuf, so create the tensor once and just mutate decodeIdBuf[0].
+        // (attention_mask can't be reused — its shape grows [1, curLen] each step.)
+        const decodeIdTensor   = new ort.Tensor('int64', decodeIdBuf, [1, 1]);
 
         // Static KV buffers. Single-buffer: read == write (in-place). Double-
         // buffer: read from one set, write to the other, swap each step (distinct
@@ -529,11 +523,8 @@ export class LLM {
         let writeIdx = this.doubleBuffer ? 1 : 0;
         for (const p of this.kvPairs) feed[p.pastName] = this.kvSets[readIdx][p.pastName];
 
+        const startTime     = performance.now();
         while (!this.eos.includes(lastToken) && (seqLen + tokenCount) < max_tokens && !this.stop) {
-            if (this.hasCacheBranch) {
-                feed['use_cache_branch'] = tokenCount > 0 ? cacheBranchTrue : cacheBranchFalse;
-            }
-
             // Present KV outputs are written into the write-set GPU buffers.
             const outputs = await this.decoderSession.run(feed, fetchesPerSet[writeIdx]);
 
@@ -553,7 +544,7 @@ export class LLM {
 
             // Prepare next decode step: input_ids, attention_mask, position_ids
             decodeIdBuf[0] = lastToken;
-            feed['input_ids'] = new ort.Tensor('int64', decodeIdBuf, [1, 1]);
+            feed['input_ids'] = decodeIdTensor;
 
             // Extend attention mask in pre-allocated buffer (no copy — uses subarray view)
             maskBuffer[curLen] = 1n;
@@ -562,9 +553,7 @@ export class LLM {
                 maskBuffer.subarray(0, curLen), [1, curLen]);
 
             // Position IDs for single decode token
-            if (this.need_position_ids) {
-                feed['position_ids'] = this._makeSinglePositionId(curLen - 1, posIdBuf);
-            }
+            feed['position_ids'] = this._makeSinglePositionId(curLen - 1, posIdBuf);
         }
 
         const endTime = performance.now();
