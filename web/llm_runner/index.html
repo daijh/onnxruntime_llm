@@ -315,17 +315,21 @@
             const imports = isLocal ? {
                 '@huggingface/transformers': '/web/node_modules/@huggingface/transformers/dist/transformers.web.js',
                 'onnxruntime-common': '/web/node_modules/onnxruntime-common/dist/esm/index.js',
-                'onnxruntime-web': '/web/node_modules/onnxruntime-web/dist/ort.webgpu.mjs',
+                // Use the JSPI build (ort-wasm-simd-threaded.jspi.mjs) instead of the
+                // default webgpu build, which is compiled to asyncify. The jspi build
+                // also includes the WebGPU backend.
+                'onnxruntime-web': '/web/node_modules/onnxruntime-web/dist/ort.jspi.mjs',
                 // @huggingface/transformers imports the "onnxruntime-web/webgpu" subpath;
                 // import maps don't resolve subpaths, so map it explicitly to the same build.
-                'onnxruntime-web/webgpu': '/web/node_modules/onnxruntime-web/dist/ort.webgpu.mjs',
+                'onnxruntime-web/webgpu': '/web/node_modules/onnxruntime-web/dist/ort.jspi.mjs',
             } : {
                 '@huggingface/transformers': `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TFJS}/dist/transformers.web.js`,
                 'onnxruntime-common': `https://cdn.jsdelivr.net/npm/onnxruntime-common@${ORT}/dist/esm/index.js`,
-                // Self-contained bundle: inlines the WASM glue + worker so nothing is
+                // Self-contained JSPI bundle: uses ort-wasm-simd-threaded.jspi.mjs
+                // (instead of asyncify) and inlines the WASM glue + worker so nothing is
                 // dynamically imported cross-origin from the CDN (only the .wasm is fetched).
-                'onnxruntime-web': `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/ort.webgpu.bundle.min.mjs`,
-                'onnxruntime-web/webgpu': `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/ort.webgpu.bundle.min.mjs`,
+                'onnxruntime-web': `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/ort.jspi.bundle.min.mjs`,
+                'onnxruntime-web/webgpu': `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT}/dist/ort.jspi.bundle.min.mjs`,
             };
             const map = document.createElement('script');
             map.type = 'importmap';
