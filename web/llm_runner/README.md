@@ -5,13 +5,15 @@ General-purpose LLM chat interface using ONNX Runtime Web with WebGPU. Works wit
 ## Features
 
 - Single-session merged decoder (no separate embed/vision sessions)
+- Works with hybrid architectures that mix full-attention (key/value) and
+  linear-attention (recurrent/conv state) layers, e.g. Qwen3.5
 - Auto-detects model capabilities from session metadata:
   - `position_ids` rank (2D standard or 3D MRoPE)
-  - `use_cache_branch` for merged prefill/decode models
-  - `num_logits_to_keep` for selective logit output
-- Static GPU-buffer KV cache pre-allocated to a configurable max context (default 8192)
-  - Single-buffer (in-place) by default; double-buffer auto-enabled for models that need it (e.g. Qwen3.5)
-- Auto-probes external data files (`.onnx.data` / `.onnx_data`)
+  - full-attention KV vs. linear-attention recurrent/conv cache tensors
+- Static GPU-buffer KV/state cache pre-allocated to a configurable max context
+  (default 8192); past and present share the same buffer (in-place)
+- Reads decoder settings from `text_config` for nested multimodal configs
+- Detects external data files by scanning the ONNX graph (no 404-prone probes)
 - Chat template support via `@huggingface/transformers` tokenizer
 - Configurable prefill padding/truncation, decode length, and max context
 - Streaming token generation with performance metrics
@@ -82,7 +84,8 @@ Each entry describes one Hugging Face model:
 - `hfId` — Hugging Face repo id; the tokenizer and config are fetched from here.
 - `modelUrl` — base URL for the model's files (typically `…/resolve/main`).
 - `file` — path to a decoder `.onnx`, relative to `modelUrl` or an absolute URL.
-  External data files (`.onnx_data`) are auto-probed at load time.
+  External data files (`.onnx_data`) are detected by scanning the graph and
+  fetched automatically.
 
 Verify the repo ids and ONNX file names against the actual HF repos — they vary
 per model.
@@ -90,9 +93,10 @@ per model.
 ## Supported models
 
 Works with **any merged-decoder ONNX model** exported in the transformers.js /
-`onnx-community` style — a single `model*.onnx` exposing `logits` and
-`past_key_values` (optionally `use_cache_branch`, `position_ids`,
-`num_logits_to_keep`). Capabilities are auto-detected, so no per-model config.
+`onnx-community` style — a single `model*.onnx` exposing `logits`, `input_ids`,
+`attention_mask`, `position_ids`, and `past_key_values` (attention key/value
+and/or linear-attention recurrent/conv state). Capabilities are auto-detected,
+so no per-model config.
 
 To load in the browser a model needs:
 

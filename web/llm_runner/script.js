@@ -394,7 +394,6 @@ async function loadAndInitializeModel() {
         const maxLen   = parseInt(maxContextInput?.value) || 8192;
         llm = new LLM();
         await llm.load(sel.configBaseUrl, {
-            provider: "webgpu",
             verbose,
             profiler,
             maxLen,

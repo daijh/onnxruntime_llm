@@ -1,19 +1,17 @@
 /**
  * llm.js — Generic single-session LLM inference using ONNX Runtime WebGPU.
  *
- * Works with any merged-decoder ONNX model. Capabilities (position-id rank and
- * KV cache shapes/dtypes) are auto-detected from the ONNX session metadata at
- * load time, so no per-model configuration is required.
+ * Works with any merged-decoder ONNX model, including hybrid architectures that
+ * mix full-attention layers (past/present key & value) with linear-attention
+ * layers (recurrent/conv states), e.g. Qwen3.5. Capabilities (position-id rank,
+ * and KV/state cache shapes & dtypes) are auto-detected from the ONNX session
+ * metadata at load time, so no per-model configuration is required.
  *
  * KV cache:
  *   - Static: pre-allocated once to `maxLen` (default 8192) as GPU buffers, so
- *     there is no per-step reallocation and the cache stays on-device.
- *   - Single-buffer (default): the same buffer is bound as both past input and
- *     present output (in-place), using half the memory.
- *   - Double-buffer: two buffer sets alternate read/write roles each step.
- *     Required for models that fuse the KV read and scatter-write into one
- *     compute pass (WebGPU forbids read-only + read-write aliasing), e.g.
- *     Qwen3.5, which is auto-detected. Override via `options.doubleBuffer`.
+ *     there is no per-step reallocation and the cache stays on-device. Recurrent
+ *     linear-attention states are fixed-size and kept on-device the same way.
+ *     The same buffer is bound as both past input and present output (in-place).
  */
 
 import * as ort from 'onnxruntime-web';
@@ -231,12 +229,11 @@ export class LLM {
     kvIndices       = [];   // [[outputIdx, pastInputName], ...]
 
     // Static GPU-buffer KV cache
-    doubleBuffer   = false;     // distinct read/write buffers (needed by e.g. Qwen3.5)
     device         = null;
     maxLen         = MAX_LEN;
     kvPairs        = [];        // [{ outName, pastName, dims, dtype }]
     kvOutToPast    = {};        // present output name -> past input name
-    kvSets         = [];        // [{ pastName -> gpu Tensor }] (1 entry = single, 2 = double)
+    kvSet          = {};        // pastName -> gpu Tensor (in-place past/present)
 
     // Runtime state
     feed          = {};
@@ -269,18 +266,29 @@ export class LLM {
         const configBytes = await fetchAndCache(model + "/config.json");
         const modelConfig = JSON.parse(new TextDecoder().decode(configBytes));
 
+        // Multimodal configs (e.g. Qwen3.5 *ForConditionalGeneration) nest the
+        // text-decoder settings under `text_config`; fall back to it for fields
+        // that aren't present at the top level.
+        const textConfig = modelConfig.text_config || modelConfig;
+
         // EOS token IDs
-        let eosIds = modelConfig.eos_token_id;
+        let eosIds = modelConfig.eos_token_id ?? textConfig.eos_token_id;
         if (!Array.isArray(eosIds)) eosIds = [eosIds];
         this.eos = BigInt64Array.from(eosIds.filter(v => v != null), v => BigInt(v));
 
-        const numLayers = modelConfig.num_hidden_layers;
+        const numLayers = modelConfig.num_hidden_layers ?? textConfig.num_hidden_layers;
 
-        // Keep KV cache on GPU for fast decode
+        // Keep KV cache on GPU for fast decode. Pin every possible present.* output
+        // to a gpu-buffer: standard attention layers emit key/value, while hybrid
+        // linear-attention layers (e.g. Qwen3.5) emit conv_state/recurrent_state
+        // instead. Names that don't match an actual output are ignored by ORT, so
+        // listing all four patterns covers both architectures.
         const preferred = {};
         for (let i = 0; i < numLayers; ++i) {
             preferred[`present.${i}.key`] = 'gpu-buffer';
             preferred[`present.${i}.value`] = 'gpu-buffer';
+            preferred[`present.${i}.conv_state`] = 'gpu-buffer';
+            preferred[`present.${i}.recurrent_state`] = 'gpu-buffer';
         }
         const opt = {
             executionProviders: ["webgpu"],
@@ -366,11 +374,14 @@ export class LLM {
         // Log input/output counts for diagnostics
         log(`  inputs (${this.decoderSession.inputNames.length}), outputs (${this.decoderOutNames.length})`);
 
-        // Build present→past KV cache mapping
+        // Build present→past cache mapping. Every cache output is named
+        // "present.<layer>.<slot>" (slot = key/value for attention layers,
+        // conv_state/recurrent_state for linear-attention layers) and pairs with
+        // the "past_key_values.<layer>.<slot>" input of the same name.
         const presentToPast = {};
         for (const name of this.decoderOutNames) {
-            if (!name.includes('present')) continue;
-            const past = name.replace('present', 'past_key_values');
+            if (!name.startsWith('present.')) continue;
+            const past = 'past_key_values.' + name.slice('present.'.length);
             if (inputNameSet.has(past)) presentToPast[name] = past;
         }
         this.kvIndices = this.decoderOutNames
@@ -387,15 +398,6 @@ export class LLM {
         for (const p of this.kvPairs) this.kvOutToPast[p.outName] = p.pastName;
         this.dtype = this.kvPairs.length ? this.kvPairs[0].dtype : "float16";
 
-        // Single-buffer (same GPU buffer as past & present) is fastest and uses
-        // half the memory, but fails on models that fuse the KV read and scatter-
-        // write into one compute pass (WebGPU forbids read-only + read-write
-        // aliasing). Qwen3.5 is such a model, so it needs double-buffering.
-        // options.doubleBuffer forces the mode; otherwise auto-detect Qwen3.5.
-        const nameStr = `${model} ${modelConfig._name_or_path || ''} ${(modelConfig.architectures || []).join(' ')}`.toLowerCase();
-        const isQwen35 = /qwen-?3\.5|qwen3_5|qwen35/.test(nameStr);
-        this.doubleBuffer = (options.doubleBuffer !== undefined) ? options.doubleBuffer : isQwen35;
-
         this.resetFeed();
         log("Session loaded.");
     }
@@ -406,11 +408,10 @@ export class LLM {
 
     initializeFeed() { this.resetFeed(); }
     resetFeed() {
-        // Drop stale feed references (KV tensors are owned by kvSets).
+        // Drop stale feed references (KV tensors are owned by kvSet).
         for (const key of Object.keys(this.feed)) delete this.feed[key];
-        this._disposeKvSets();
-        const n = this.doubleBuffer ? 2 : 1;
-        this.kvSets = Array.from({ length: n }, () => this._allocKvSet());
+        this._disposeKvSet();
+        this.kvSet = this._allocKvSet();
         this.output_tokens = [];
     }
 
@@ -423,15 +424,13 @@ export class LLM {
         return set;
     }
 
-    /** Destroy all KV buffer sets and their underlying GPU buffers. */
-    _disposeKvSets() {
-        for (const set of this.kvSets) {
-            for (const name in set) {
-                const buf = set[name].gpuBuffer;
-                if (buf && typeof buf.destroy === 'function') buf.destroy();
-            }
+    /** Destroy the KV buffer set and its underlying GPU buffers. */
+    _disposeKvSet() {
+        for (const name in this.kvSet) {
+            const buf = this.kvSet[name].gpuBuffer;
+            if (buf && typeof buf.destroy === 'function') buf.destroy();
         }
-        this.kvSets = [];
+        this.kvSet = {};
     }
 
     /** Signal the decode loop to stop. */
@@ -505,28 +504,21 @@ export class LLM {
         // (attention_mask can't be reused — its shape grows [1, curLen] each step.)
         const decodeIdTensor   = new ort.Tensor('int64', decodeIdBuf, [1, 1]);
 
-        // Static KV buffers. Single-buffer: read == write (in-place). Double-
-        // buffer: read from one set, write to the other, swap each step (distinct
-        // read/write buffers are required on WebGPU for models like Qwen3.5).
-        // Pre-build one fetches map per buffer set (KV outputs -> that set's
-        // buffers, everything else -> null for ORT to allocate) so the decode
-        // loop reuses them instead of rebuilding a map every step.
-        const fetchesPerSet = this.kvSets.map((set) => {
-            const f = {};
-            for (const name of this.decoderOutNames) {
-                f[name] = (name in this.kvOutToPast) ? set[this.kvOutToPast[name]] : null;
-            }
-            return f;
-        });
-
-        let readIdx = 0;
-        let writeIdx = this.doubleBuffer ? 1 : 0;
-        for (const p of this.kvPairs) feed[p.pastName] = this.kvSets[readIdx][p.pastName];
+        // Static KV buffers, bound in place: the same GPU buffer is fed as the
+        // past input and requested as the present output each step. Pre-build the
+        // fetches map once (cache outputs -> their buffer, everything else -> null
+        // for ORT to allocate) so the decode loop reuses it instead of rebuilding
+        // a map every step.
+        const fetches = {};
+        for (const name of this.decoderOutNames) {
+            fetches[name] = (name in this.kvOutToPast) ? this.kvSet[this.kvOutToPast[name]] : null;
+        }
+        for (const p of this.kvPairs) feed[p.pastName] = this.kvSet[p.pastName];
 
         const startTime     = performance.now();
         while (!this.eos.includes(lastToken) && (seqLen + tokenCount) < max_tokens && !this.stop) {
-            // Present KV outputs are written into the write-set GPU buffers.
-            const outputs = await this.decoderSession.run(feed, fetchesPerSet[writeIdx]);
+            // Present KV outputs are written back into the same GPU buffers.
+            const outputs = await this.decoderSession.run(feed, fetches);
 
             lastToken = BigInt(argmax(outputs.logits));
             this.output_tokens.push(lastToken);
@@ -534,11 +526,6 @@ export class LLM {
 
             if (callback) callback(this.output_tokens);
             if (firstTokenTime === 0) firstTokenTime = performance.now();
-
-            // Feed the freshly written buffers as next-step past inputs, then swap
-            // read/write roles (no-op for single-buffer, where read == write).
-            for (const p of this.kvPairs) feed[p.pastName] = this.kvSets[writeIdx][p.pastName];
-            if (this.doubleBuffer) [readIdx, writeIdx] = [writeIdx, readIdx];
 
             if (this.eos.includes(lastToken)) break;
 

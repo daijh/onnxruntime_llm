@@ -1,5 +1,5 @@
 {
-  "_comment": "Model manifest used when NOT running on localhost (e.g. GitHub Pages). Each entry streams from the Hugging Face Hub. The onnx file paths below use the conventional onnx-community layout (onnx/model_q4f16.onnx) and were NOT verified against the live repos — confirm the exact file names in each repo's 'Files' tab. External data files (.onnx_data) are auto-probed at load time.",
+  "_comment": "Model manifest used when NOT running on localhost (e.g. GitHub Pages). Each entry streams from the Hugging Face Hub. The onnx file paths below use the conventional onnx-community layout (onnx/model_q4f16.onnx) and were NOT verified against the live repos — confirm the exact file names in each repo's 'Files' tab. External data files (.onnx_data) are detected by scanning the ONNX graph and fetched automatically.",
   "models": [
     {
       "label": "Phi-4-mini-instruct (onnx-community)",
