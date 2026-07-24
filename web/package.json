@@ -7,7 +7,7 @@
   "type": "module",
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "onnxruntime-web": "^1.27.0"
+    "onnxruntime-web": "1.29.0-dev.20260723-1b1e1db7bc"
   },
   "scripts": {
     "serve": "npx http-server .. -p 8080 --cors -c-1"

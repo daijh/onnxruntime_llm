@@ -20,7 +20,7 @@ const host = location.hostname;
 export const IS_LOCAL = host === 'localhost' || host === '127.0.0.1' || host === '';
 
 /** onnxruntime-web version — the WASM/JSEP binaries must match the JS build. */
-export const ORT_VERSION = '1.27.0';
+export const ORT_VERSION = '1.29.0-dev.20260723-1b1e1db7bc';
 
 /** Where onnxruntime-web loads its .wasm / .mjs backend files from. */
 export const wasmPaths = IS_LOCAL
